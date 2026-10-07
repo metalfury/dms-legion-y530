@@ -1,0 +1,13 @@
+{
+  "id": "legionFan",
+  "name": "Legion Fan",
+  "description": "Lenovo Legion Y530: fan/power levels, extreme cooling and battery charge limit",
+  "version": "1.0.0",
+  "author": "metalfury",
+  "icon": "mode_fan",
+  "type": "widget",
+  "capabilities": ["dankbar-widget"],
+  "component": "./LegionFanWidget.qml",
+  "requires_dms": ">=1.6.0",
+  "permissions": ["process"]
+}

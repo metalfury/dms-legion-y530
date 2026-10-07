@@ -1,0 +1,135 @@
+#!/bin/sh
+# legion: fan/power levels and battery charge limit for the Lenovo Legion Y530
+#
+#   legion                                      show status
+#   legion set silent|balanced|performance|max  pick a level
+#   legion cycle                                next level
+#   legion battery 60|70|80|90|100              charge limit (100 = off)
+#   legion battery-apply                        enforce the limit once
+#   legion battery-daemon                       enforce the limit every minute
+#   legion status --raw                         one line for the DMS widget
+#   -q                                          no notification
+#
+# Needs LenovoLegionLinux with fan_unlock on 8JCN (Y530).
+L=${LEGION_SYSFS:-/sys/bus/platform/drivers/legion/legion}
+CONF=${XDG_CONFIG_HOME:-$HOME/.config}/legion
+PP=org.freedesktop.UPower.PowerProfiles
+HYST=3
+quiet=0
+for a in "$@"; do [ "$a" = -q ] && quiet=1; done
+
+notify() { [ $quiet = 1 ] || notify-send -a Legion -i weather-windy "$1"; }
+
+ppd_get() {
+  if command -v powerprofilesctl >/dev/null 2>&1; then powerprofilesctl get; return; fi
+  gdbus call --system --dest $PP --object-path /org/freedesktop/UPower/PowerProfiles \
+    --method org.freedesktop.DBus.Properties.Get $PP ActiveProfile | sed "s/.*'\(.*\)'.*/\1/"
+}
+
+ppd_set() {
+  if command -v powerprofilesctl >/dev/null 2>&1; then powerprofilesctl set "$1"; return; fi
+  gdbus call --system --dest $PP --object-path /org/freedesktop/UPower/PowerProfiles \
+    --method org.freedesktop.DBus.Properties.Set $PP ActiveProfile "<'$1'>" >/dev/null
+}
+
+fans() {
+  for h in /sys/class/hwmon/hwmon*; do
+    if [ "$(cat "$h/name" 2>/dev/null)" = legion_hwmon ]; then
+      echo "$(cat "$h/fan1_input") $(cat "$h/fan2_input")"
+      return
+    fi
+  done
+  echo "0 0"
+}
+
+capacity() {
+  for b in /sys/class/power_supply/BAT*; do
+    [ -r "$b/capacity" ] && { cat "$b/capacity"; return; }
+  done
+  echo 0
+}
+
+limit() { cat "$CONF/battery-limit" 2>/dev/null || echo 100; }
+
+level() {
+  if [ "$(cat "$L/fan_unlock" 2>/dev/null)" = 1 ]; then echo max; return; fi
+  case $(ppd_get 2>/dev/null) in
+    power-saver) echo silent ;;
+    performance) echo performance ;;
+    *) echo balanced ;;
+  esac
+}
+
+name() {
+  case $1 in
+    silent) echo Silent ;; balanced) echo Balanced ;; performance) echo Performance ;; max) echo Max ;; *) echo "$1" ;;
+  esac
+}
+
+set_level() {
+  case $1 in
+    silent) p=power-saver e=0 ;;
+    balanced) p=balanced e=0 ;;
+    performance) p=performance e=0 ;;
+    max) p=performance e=1 ;;
+    *) echo "level: silent|balanced|performance|max"; exit 1 ;;
+  esac
+  ppd_set "$p" || echo "could not set power profile: $p" >&2
+  echo "$e" >"$L/fan_unlock" || exit 1
+  notify "Fan: $(name "$1")"
+}
+
+# Conservation mode makes the firmware stop charging at ~60 %. Above that,
+# switch it on at the limit and off again HYST % below it.
+battery_apply() {
+  lim=$(limit)
+  cur=$(cat "$L/battery_conservation" 2>/dev/null) || return 1
+  if [ "$lim" -ge 100 ]; then
+    want=0
+  elif [ "$lim" -le 60 ]; then
+    want=1
+  else
+    cap=$(capacity)
+    if [ "$cap" -ge "$lim" ]; then want=1
+    elif [ "$cap" -le $((lim - HYST)) ]; then want=0
+    else want=$cur
+    fi
+  fi
+  [ "$want" = "$cur" ] || echo "$want" >"$L/battery_conservation"
+}
+
+case ${1:-} in
+  set) set_level "${2:-}" ;;
+  cycle)
+    case $(level) in
+      silent) set_level balanced ;;
+      balanced) set_level performance ;;
+      performance) set_level max ;;
+      *) set_level silent ;;
+    esac ;;
+  battery)
+    case ${2:-} in
+      60 | 70 | 80 | 90 | 100) ;;
+      *) echo "usage: legion battery 60|70|80|90|100"; exit 1 ;;
+    esac
+    mkdir -p "$CONF" && echo "$2" >"$CONF/battery-limit"
+    battery_apply || exit 1
+    if [ "$2" = 100 ]; then notify "Charge limit off"; else notify "Charge limit: $2 %"; fi ;;
+  battery-apply) battery_apply ;;
+  battery-daemon)
+    while :; do
+      battery_apply
+      sleep 60
+    done ;;
+  status | "")
+    lv=$(level)
+    f=$(fans)
+    if [ "${2:-}" = --raw ]; then
+      echo "$lv $(cat "$L/fan_unlock" 2>/dev/null || echo 0) $f $(cat "$L/battery_conservation" 2>/dev/null || echo 0) $(limit) $(capacity)"
+    else
+      echo "Level:   $(name "$lv")  (power profile: $(ppd_get 2>/dev/null))"
+      echo "Fans:    ${f% *} / ${f#* } RPM"
+      echo "Battery: $(capacity) %, limit $(limit) %"
+    fi ;;
+  *) echo "usage: legion [status|set <level>|cycle|battery <limit>]"; exit 1 ;;
+esac

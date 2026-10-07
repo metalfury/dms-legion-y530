@@ -1,0 +1,2 @@
+# Let members of wheel write the Legion Y530 fan and battery attributes.
+ACTION=="bind", SUBSYSTEM=="platform", DRIVER=="legion", RUN+="/bin/sh -c 'cd /sys%p && chgrp wheel fan_unlock battery_conservation && chmod g+w fan_unlock battery_conservation'"

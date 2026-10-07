@@ -1,0 +1,9 @@
+[Unit]
+Description=Legion battery charge limit
+
+[Service]
+ExecStart=%h/.local/bin/legion battery-daemon
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
